@@ -1,0 +1,276 @@
+---
+title: "DepMap EDA"
+author: "Sally Claridge"
+date: "2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE}
+library(reshape2)
+library(tidyverse)
+library(magrittr)
+library(ggpubr)
+
+unfactorize <- function(df){
+   for(i in which(sapply(df, class) == "factor")) {
+    df[[i]] <- as.character(df[[i]])
+  }
+  return(df)
+}
+```
+
+# Load DepMap data files
+
+--------------------------------------------------------------------------------
+
+```{r, eval=FALSE}
+drug <- read.csv("./primary-screen-replicate-collapsed-logfold-change.csv", header = TRUE, sep = ",", check.names = FALSE)
+drug_meta <- read.csv("./primary-screen-replicate-collapsed-treatment-info.csv", header = TRUE, sep = ",", check.names = FALSE)
+colnames(drug)[1] <- "DepMap_ID"
+# Melt
+drug_melt <- melt(drug, id.vars = "DepMap_ID", measure.vars = colnames(drug)[2:ncol(drug)], variable.name = "column_name", value.name = "viability_log2FC")
+drug_df <- merge(drug_melt, drug_meta, by = "column_name") %>% select(DepMap_ID, name, moa, viability_log2FC)
+drug_df <- unfactorize(drug_df)
+drug_df <- drug_df[!grepl("FAILED", drug_df$DepMap_ID),]
+write.table(drug_df, "./primary-screen-replicate-collapsed-logfold-change_long.csv", sep = ",", col.names = TRUE, row.names = FALSE)
+
+mut <- read.csv("./CCLE_mutations.tsv", header = TRUE, sep = "\t", check.names = FALSE)
+mut_nonsilent <- filter(mut, Variant_Classification != "Silent")
+colnames(mut_nonsilent)[colnames(mut_nonsilent) == "Hugo_Symbol"] <- "Gene"
+write.table(mut_nonsilent, "./CCLE_mutations_nonsilent.csv", sep = ",", col.names = TRUE, row.names = FALSE)
+mut_nonsilent_binary <- unique(select(mut_nonsilent, Gene, DepMap_ID))
+mut_nonsilent_binary$Mutation_Status <- "1"
+write.table(mut_nonsilent_binary, "./CCLE_mutations_nonsilent_binary.csv", sep = ",", col.names = TRUE, row.names = FALSE)
+
+ge <- read.csv("./CCLE_expression.csv", header = TRUE, sep = ",", check.names = FALSE)
+# Remove Entrez gene IDs from colnames, format is "Gene (Entrez ID)"
+colnames(ge) <- gsub(" .*", "", colnames(ge))
+colnames(ge)[1] <- "DepMap_ID"
+# Melt
+ge_melt <- melt(ge, id.vars = "DepMap_ID", measure.vars = colnames(ge)[2:ncol(ge)], variable.name = "Gene", value.name = "RSEM")
+ge_melt <- unfactorize(ge_melt)
+write.table(ge_melt, "./CCLE_expression_long.csv", sep = ",", col.names = TRUE, row.names = FALSE)
+
+cn <- read.csv("./CCLE_gene_cn.csv", header = TRUE, sep = ",", check.names = FALSE)
+# Remove Entrez gene IDs from colnames, format is "Gene (Entrez ID)"
+colnames(cn) <- gsub(" .*", "", colnames(cn))
+colnames(cn)[1] <- "DepMap_ID"
+# Melt
+cn_melt <- melt(data = cn, id.vars = "DepMap_ID", measure.vars = colnames(cn[2:ncol(cn)]), variable.name = "Gene", value.name = "CN")
+cn_melt <- unfactorize(cn_melt)
+write.table(cn_melt, "./CCLE_gene_cn_long.csv", sep = ",", col.names = TRUE, row.names = FALSE)
+
+dep <- read.csv("./Achilles_gene_effect.csv", header = TRUE, sep = ",", check.names = FALSE)
+# Remove Entrez gene IDs from colnames, format is "Gene (Entrez ID)"
+colnames(dep) <- gsub(" .*", "", colnames(dep))
+dep_melt <- melt(data = dep, id.vars = "DepMap_ID", measure.vars = colnames(dep[2:ncol(dep)]), variable.name = "Gene", value.name = "CERES")
+dep_melt <- unfactorize(dep_melt)
+write.table(dep_melt, "./Achilles_gene_effect_long.csv", sep = ",", col.names = TRUE, row.names = FALSE)
+```
+
+```{r}
+meta <- read.csv("./sample_info.csv", header = TRUE, sep = ",")
+mut <- read.csv("./CCLE_mutations_nonsilent.csv", header = TRUE, sep = ",", check.names = FALSE)
+mut_binary <- read.csv("./CCLE_mutations_nonsilent_binary.csv", header = TRUE, sep = ",", check.names = FALSE)
+ge <- read.csv("./CCLE_expression_long.csv", header = TRUE, sep = ",", check.names = FALSE)
+cn <- read.csv("./CCLE_gene_cn_long.csv", header = TRUE, sep = ",", check.names = FALSE)
+dep <- read.csv("./Achilles_gene_effect_long.csv", header = TRUE, sep = ",", check.names = FALSE)
+```
+
+# Filter data by disease
+
+--------------------------------------------------------------------------------
+
+```{r, eval=FALSE}
+FilterAndMergeOmics <- function(metadata, binary_mutation_df, gene_expression_df, copy_number_df, ceres_scores_df, lineage_list) {
+  if(length(setdiff(lineage_list, unique(metadata$lineage))) != 0) {
+    print("Primary disease(s) not found in metadata:")
+    print(setdiff(lineage_list, unique(metadata$lineage)))
+    return(NULL)
+  }
+  metafilt <- filter(metadata, lineage %in% lineage_list)
+  ids <- unique(metafilt$DepMap_ID)
+  
+  mut <- filter(binary_mutation_df, DepMap_ID %in% ids)
+  ge <- filter(gene_expression_df, DepMap_ID %in% ids)
+  cn <- filter(copy_number_df, DepMap_ID %in% ids)
+  dep <- filter(ceres_scores_df, DepMap_ID %in% ids)
+  
+  df <- merge(merge(merge(dep, mut, by = c("DepMap_ID", "Gene"), all = TRUE), ge, by = c("DepMap_ID", "Gene"), all = TRUE), cn, by = c("DepMap_ID", "Gene"), all = TRUE)
+  df <- merge(df, metafilt, by = "DepMap_ID", all = TRUE)
+  
+  df$Mutation_Status[is.na(df$Mutation_Status)] <- "0"
+  
+  df <- df %>% drop_na(Gene)
+  df <- unfactorize(df)
+  return(df)
+}
+```
+
+# Explore breast CCL data
+
+--------------------------------------------------------------------------------
+
+```{r, eval=FALSE}
+breast <- FilterAndMergeOmics(metadata = meta,
+                          binary_mutation_df = mut_binary,
+                          gene_expression_df = ge,
+                          copy_number_df = cn,
+                          ceres_scores_df = dep,
+                          lineage_list = c("breast"))
+write.table(breast, "./merged_data_breast_ceres.csv", sep = ",", col.names = TRUE, row.names = FALSE)
+```
+
+```{r}
+breast <- read.csv("./merged_data_breast_ceres.csv", header = TRUE, sep = ",", check.names = FALSE)
+breast_subtype_n <- filter(meta, lineage == "breast") %>% group_by(lineage_sub_subtype) %>% count()
+
+mut_breast <- filter(mut, DepMap_ID %in% filter(meta, lineage == "breast")$DepMap_ID)
+```
+
+```{r, message=FALSE, warning=FALSE}
+ge_corr <- unfactorize(breast) %>% group_by(Gene) %>% drop_na(CERES) %>% drop_na(RSEM) %>%
+           summarize(GE_r = cor.test(y = CERES, x = RSEM, method = "pearson", use = "complete.obs", exact = FALSE)$estimate,
+                     GE_p = cor.test(y = CERES, x = RSEM, method = "pearson", use = "complete.obs", exact = FALSE)$p.value, 
+                     GE_p_log10 = -log10(GE_p))
+cn_corr <- unfactorize(breast) %>% group_by(Gene) %>% drop_na(CERES) %>% drop_na(CN) %>%
+           summarize(CN_r = cor.test(y = CERES, x = CN, method = "pearson", use = "complete.obs", exact = FALSE)$estimate,
+                     CN_p = cor.test(y = CERES, x = CN, method = "pearson", use = "complete.obs", exact = FALSE)$p.value, 
+                     CN_p_log10 = -log10(CN_p))
+
+adj_signif <- function(df, alpha) {
+  # Takes df from compare_means and creates a signif code column for FDR-adjusted p-vals
+  df$p.signif.adj <- ifelse(df$p.adj <= alpha, "*", NA)
+  df$p.signif <- ifelse(df$p.signif == "ns", NA, df$p.signif)
+  df$p.short <- formatC(df$p, format = "g", digits =  2)
+  df$p.adj.short <- formatC(df$p.adj, format = "g", digits =  2)
+  return(df)
+}
+
+mut_summ <- breast %>% drop_na(CERES) %>% group_by(Gene, Mutation_Status) %>% count() %>% filter(n >= 3)
+mut_summ_n <- mut_summ %>% group_by(Gene) %>% count() %>% filter(n == 2)
+mut_corr <- compare_means(CERES ~ Mutation_Status, group.by = "Gene", data = filter(unfactorize(breast), Gene %in% mut_summ_n$Gene), paired = FALSE, method = "wilcox.test", p.adjust.method = "BH")
+mut_corr <- adj_signif(mut_corr, alpha = 0.05)
+mut_corr <- mut_corr[order(mut_corr$p),]
+```
+
+```{r fig.height=6, fig.width=12}
+mut_corr_filt <- filter(mut_corr, p < 0.011)
+ggplot(data = filter(breast, Gene %in% mut_corr_filt$Gene)) +
+  facet_wrap(~ Gene, nrow = 2) +
+  geom_boxplot(aes(x = Mutation_Status, y = CERES), width = 0.4, outlier.shape = NA, alpha = 0.8) +
+  geom_point(aes(x = Mutation_Status, y = CERES, color = lineage_sub_subtype), position = position_jitter(width = 0.15), size = 1.5, alpha = 0.6) +
+  stat_compare_means(method = "wilcox", aes(x = Mutation_Status, y = CERES, label = paste0("p = ", ..p.format..)), label.x = 1.25, label.y = 0.6) +
+  scale_x_discrete(labels = c("0" = "Wildtype", "1" = "Mutant")) +
+  theme(legend.position = "bottom")
+
+ge_corr_filt <- filter(ge_corr, GE_p_log10 > 5.96)
+ge_breast_filt <- filter(breast, Gene %in% ge_corr_filt$Gene) %>% drop_na(RSEM, CERES)
+ggplot(data = ge_breast_filt) +
+  facet_grid(lineage_sub_subtype ~ Gene) +
+  geom_point(aes(x = RSEM, y = CERES, color = lineage_sub_subtype), position = position_jitter(width = 0.15), size = 1.5, alpha = 0.6)
+
+cn_corr_filt <- filter(cn_corr, CN_p_log10 > 6.86)
+cn_breast_filt <- filter(breast, Gene %in% cn_corr_filt$Gene) %>% drop_na(CN, CERES)
+ggplot(data = cn_breast_filt) +
+  facet_grid(lineage_sub_subtype ~ Gene) +
+  geom_point(aes(x = CN, y = CERES, color = lineage_sub_subtype), position = position_jitter(width = 0.15), size = 1.5, alpha = 0.6)
+```
+
+
+# Explore drug data
+
+--------------------------------------------------------------------------------
+
+```{r}
+FilterAndMergeDrugOmics <- function(metadata, binary_mutation_df, gene_expression_df, copy_number_df, drug_response_df, lineage_list) {
+  if(length(setdiff(lineage_list, unique(metadata$lineage))) != 0) {
+    print("Primary disease(s) not found in metadata:")
+    print(setdiff(lineage_list, unique(metadata$lineage)))
+    return(NULL)
+  }
+  metafilt <- filter(metadata, lineage %in% lineage_list)
+  ids <- unique(metafilt$DepMap_ID)
+  
+  mut <- filter(binary_mutation_df, DepMap_ID %in% ids)
+  ge <- filter(gene_expression_df, DepMap_ID %in% ids)
+  cn <- filter(copy_number_df, DepMap_ID %in% ids)
+  drug <- filter(drug_response_df, DepMap_ID %in% ids)
+  
+  df <- merge(merge(merge(drug, mut, by = c("DepMap_ID"), all.x = TRUE), ge, by = c("DepMap_ID", "Gene"), all.x = TRUE), cn, by = c("DepMap_ID", "Gene"), all.x = TRUE)
+  df <- merge(df, metafilt, by = "DepMap_ID", all.x = TRUE)
+  
+  df$Mutation_Status[is.na(df$Mutation_Status)] <- "0"
+  
+  df <- df %>% drop_na(Gene)
+  df <- unfactorize(df)
+  return(df)
+}
+```
+
+```{r, eval=TRUE}
+drug <- read.csv("./primary-screen-replicate-collapsed-logfold-change_long.csv", header = TRUE, sep = ",")
+drug_filt <- drug[grepl("PI3K", drug$moa) | grepl("fulvestrant", drug$name),]
+drug_merged <- FilterAndMergeDrugOmics(metadata = meta,
+                          binary_mutation_df = mut_binary,
+                          gene_expression_df = ge,
+                          copy_number_df = cn,
+                          drug_response_df = drug_filt,
+                          lineage_list = c("breast"))
+write.table(drug_merged, "./merged_data_breast_drug_response.csv", sep = ",", col.names = TRUE, row.names = FALSE)
+```
+
+```{r}
+breast_drug <- read.csv("./merged_data_breast_drug_response.csv", header = TRUE, sep = ",", check.names = FALSE)
+breast_drug$Drug_Gene <- paste0(breast_drug$name, "_", breast_drug$Gene)
+```
+
+```{r, message=FALSE, warning=FALSE}
+ge_drug_df <- unfactorize(breast_drug) %>% group_by(Drug_Gene) %>% drop_na(viability_log2FC, RSEM)
+ge_drug_df_n <- ge_drug_df %>% group_by(Drug_Gene) %>% count() %>% filter(n >= 3)
+ge_drug_corr <- filter(ge_drug_df, Drug_Gene %in% ge_drug_df_n$Drug_Gene) %>%
+           summarize(GE_r = cor.test(y = viability_log2FC, x = RSEM, method = "pearson", use = "complete.obs", exact = FALSE)$estimate,
+                     GE_p = cor.test(y = viability_log2FC, x = RSEM, method = "pearson", use = "complete.obs", exact = FALSE)$p.value, 
+                     GE_p_log10 = -log10(GE_p))
+cn_drug_df <- unfactorize(breast_drug) %>% group_by(Drug_Gene) %>% drop_na(viability_log2FC, CN)
+cn_drug_df_n <- cn_drug_df %>% group_by(Drug_Gene) %>% count() %>% filter(n >= 3)
+cn_drug_corr <- filter(cn_drug_df, Drug_Gene %in% cn_drug_df_n$Drug_Gene) %>%
+           summarize(CN_r = cor.test(y = viability_log2FC, x = CN, method = "pearson", use = "complete.obs", exact = FALSE)$estimate,
+                     CN_p = cor.test(y = viability_log2FC, x = CN, method = "pearson", use = "complete.obs", exact = FALSE)$p.value, 
+                     CN_p_log10 = -log10(CN_p))
+
+mut_drug_summ <- breast_drug %>% drop_na(viability_log2FC) %>% group_by(Drug_Gene, Mutation_Status) %>% count() %>% filter(n >= 3)
+mut_drug_summ_n <- mut_drug_summ %>% group_by(Drug_Gene) %>% count() %>% filter(n == 2)
+```
+
+```{r fig.height=2, fig.width=12}
+ge_drug_corr_filt <- filter(ge_drug_corr, GE_p_log10 > 3.24)
+ge_breast_drug_filt <- filter(breast_drug, Drug_Gene %in% ge_drug_corr_filt$Drug_Gene) %>% drop_na(RSEM, viability_log2FC)
+ggplot(data = ge_breast_drug_filt) +
+  facet_wrap(~ Drug_Gene, nrow = 1) +
+  geom_point(aes(x = RSEM, y = viability_log2FC, color = lineage_sub_subtype), position = position_jitter(width = 0.15), size = 1.5, alpha = 0.6)
+
+cn_drug_corr_filt <- filter(cn_drug_corr, CN_p_log10 > 3.608)
+cn_breast_drug_filt <- filter(breast_drug, Drug_Gene %in% cn_drug_corr_filt$Drug_Gene) %>% drop_na(CN, viability_log2FC)
+ggplot(data = cn_breast_drug_filt) +
+  facet_wrap(~ Drug_Gene, nrow = 1) +
+  geom_point(aes(x = CN, y = viability_log2FC, color = lineage_sub_subtype), position = position_jitter(width = 0.15), size = 1.5, alpha = 0.6)
+```
+
+```{r fig.height=2, fig.width=12, eval=FALSE}
+ge_drug_corr_filt <- ge_drug_corr[grepl("alpelisib|fulvestrant", ge_drug_corr$Drug_Gene),] %>% filter(GE_p_log10 > 1.9)
+ge_breast_drug_filt <- filter(breast_drug, Drug_Gene %in% ge_drug_corr_filt$Drug_Gene) %>% drop_na(RSEM, viability_log2FC)
+ggplot(data = ge_breast_drug_filt) +
+  facet_wrap(~ Drug_Gene, nrow = 1) +
+  geom_point(aes(x = RSEM, y = viability_log2FC, color = lineage_sub_subtype), position = position_jitter(width = 0.15), size = 1.5, alpha = 0.6)
+
+cn_drug_corr_filt <- cn_drug_corr[grepl("alpelisib|fulvestrant", cn_drug_corr$Drug_Gene),] %>% filter(CN_p_log10 > 1.9)
+cn_breast_drug_filt <- filter(breast_drug, Drug_Gene %in% cn_drug_corr_filt$Drug_Gene) %>% drop_na(RSEM, viability_log2FC)
+ggplot(data = cn_breast_drug_filt) +
+  facet_wrap(~ Drug_Gene, nrow = 1) +
+  geom_point(aes(x = CN, y = viability_log2FC, color = lineage_sub_subtype), position = position_jitter(width = 0.15), size = 1.5, alpha = 0.6)
+```

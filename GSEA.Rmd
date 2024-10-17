@@ -1,0 +1,341 @@
+---
+title: "GSEA"
+author: "Sally Claridge"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: word_document
+---
+
+*Last edited made*: 28 June 2023, Sally Claridge
+
+*Approximate runtime*: 17 minutes (human), 8 min (mouse)
+
+# Global variables
+
+--------------------------------------------------------------------------------
+
+You should only ever have to edit objects in this `Global Variables` section of the markdown file.
+```{r}
+cell_line_name <- "KPA"
+
+drug_name <- "JZP"
+
+input_data <- "./20230323_JZP_KPA_Differential_expression_analysis_table.csv"
+
+output_path <- "./"
+
+# Change species to either "human" or "mouse"
+species <- "mouse"
+
+# If the second group listed in the testCondition.txt file is DMSO, flip the sign of the log2FoldChange; else, if the first group listed in the testCondition.txt is DMSO, i.e. DMSOcondition 1 = TRUE, use the log2FC value provided by Genewiz
+DMSOcondition1 <- TRUE
+
+# The first time running this script, run the following 7 lines of code; you shouldn't have to run them again
+# BiocManager::install("ComplexHeatmap")
+# BiocManager::install("gageData")
+# BiocManager::install("reactome.db")
+# BiocManager::install("pathview")
+# library(devtools)
+# devtools::install_github("ctlab/fgsea")
+```
+
+# Load libraries
+
+--------------------------------------------------------------------------------
+
+```{r setup, include=FALSE}
+start_time <- Sys.time()
+set.seed(1234)
+knitr::opts_chunk$set(echo = TRUE)
+options(scipen = 6, digits = 4)
+```
+
+```{r, message=FALSE, warning=FALSE}
+# List packages
+packages <- c("BiocManager", "devtools", "tidyverse", "reshape2", "magrittr", "ComplexHeatmap", "plotly", "htmlwidgets", "gageData", "AnnotationDbi", "fgsea", "reactome.db", "msigdbr", "org.Hs.eg.db", "org.Mm.eg.db")
+
+# Install packages not yet installed
+installed_packages <- packages %in% rownames(installed.packages())
+if (any(installed_packages == FALSE)) {
+  install.packages(packages[!installed_packages])
+}
+
+# Load all packages
+invisible(lapply(packages, library, character.only = TRUE))
+```
+
+
+# Load differential expression analysis table from Genewiz
+
+--------------------------------------------------------------------------------
+
+```{r}
+# Read in CSV
+degs <- read.delim(file = input_data, header = TRUE, sep = ",", check.names = FALSE, stringsAsFactors = FALSE)
+
+# If the second group listed in the testCondition.txt file is DMSO, flip the sign of the log2FoldChange (Boolean assigned in Global Variables)
+if(DMSOcondition1) {
+  degs$log2FoldChange_TXoverD <- degs$log2FoldChange
+} else { degs$log2FoldChange_TXoverD <- -degs$log2FoldChange }
+
+# Assign Up, Down, Not to differential expression based on log2FC and adjusted pvalue
+degs$diffexpressed <- "Not"
+# if log2Foldchange > 1 and pvalue < 0.05, set as "UP" 
+degs$diffexpressed[degs$log2FoldChange_TXoverD > 1 & degs$padj < 0.05] <- "Up"
+# if log2Foldchange < -1 and pvalue < 0.05, set as "DOWN"
+degs$diffexpressed[degs$log2FoldChange_TXoverD < -1 & degs$padj < 0.05] <- "Down"
+
+# Remove lines with NA for Gene.names
+degs <- degs %>% tidyr::drop_na(Gene.name)
+# For Gene.name duplicates, replace Gene.names with IDs to avoid rowname duplicates
+duplicate_test <- degs %>% group_by(Gene.name) %>% tally() %>% filter(n > 1)
+degs$Gene.name <- ifelse(degs$Gene.name %in% duplicate_test$Gene.name, degs$ID, degs$Gene.name)
+
+# Make output directory for this experiment
+outdir <- paste0(output_path, format(Sys.Date(), "%Y%m%d"), "_", cell_line_name,"_", drug_name)
+if(!dir.exists(file.path(outdir))) { dir.create(file.path(outdir), recursive = TRUE) }
+```
+
+# Heatmap
+
+--------------------------------------------------------------------------------
+
+```{r}
+ht_mat <- subset(degs, padj < 0.05)
+ht_mat <- ht_mat[, c(5:11)]
+rownames(ht_mat) <- ht_mat$Gene.name
+ht_mat$Gene.name <- NULL
+ht_mat <- log2(ht_mat + 1)
+ht_mat <- as.matrix(ht_mat)
+
+ht <- Heatmap(matrix = ht_mat,
+              name = "log2(Gene Expression + 1)",
+              row_title = "Genes",
+              col = circlize::colorRamp2(c(0, 5, 10, 15, 20), c("navy", "mediumblue", "white", "red", "darkred")), # Change heatmap colors
+              column_title = paste0(cell_line_name, ": ", drug_name, " treated vs. control"),
+              show_row_names = FALSE)
+
+heatmap_filename <- paste0(outdir, "/heatmap.png")
+
+png(filename = heatmap_filename, height = 15, width = 5, units = "in", res = 500)
+draw(ht)
+dev.off()
+```
+
+# Volcano
+
+--------------------------------------------------------------------------------
+
+```{r, warning=FALSE}
+volcano_png <- ggplot(data = degs) +
+  geom_point(mapping = aes(x = log2FoldChange_TXoverD, y = -log(padj), col = diffexpressed, text = Gene.name), alpha = 0.5) +
+  scale_color_manual(values = c("blue", "black", "red")) +
+  labs(y = expression(-log[10](p[adj])),
+       x = expression(log[2](Fold~Change)),
+       title = paste0(cell_line_name, ": ", drug_name, " treated vs. control"),
+       color = "Differential expression status")  +
+  theme_light() +
+  theme(legend.position = "bottom")
+
+ggsave(filename = "volcano.png", path = outdir, dpi = 300, device = "png", units = "in", height = 5, width = 6)
+
+volcano <- ggplot(data = degs) +
+  geom_point(mapping = aes(x = log2FoldChange_TXoverD, y = -log(padj), col = diffexpressed, text = paste0("Gene: ", Gene.name)), alpha = 0.5) +
+  scale_color_manual(values = c("blue", "black", "red")) +
+  labs(y = "-log10(padj)",
+       x = "log2(Fold Change)",
+       title = paste0(cell_line_name, ": ", drug_name, " treated vs. control"),
+       color = "Differential expression status")  +
+  theme_light()
+
+volcano_filename <- paste0(outdir, "/volcano_interactive.html")
+htmlwidgets::saveWidget(widget = ggplotly(volcano), file = volcano_filename)
+```
+
+
+# Load pathway databases
+
+--------------------------------------------------------------------------------
+
+```{r, warning=FALSE, message=FALSE}
+if(tolower(species) == "human") {
+  # BioCarta
+  data(carta.hs)
+  carta_pw <- carta.hs
+  
+  # Kyoto Encyclopedia of Genes and Genomes
+  data(kegg.sets.hs) 
+  kegg_pw <- kegg.sets.hs
+    
+  # Gene Ontology
+  data(go.sets.hs) 
+  go_pw <- go.sets.hs
+  
+  # Reactome
+  degs$ENTREZID <- mapIds(org.Hs.eg.db,
+                        keys = degs$ID, 
+                        column = "ENTREZID",
+                        keytype = "ENSEMBL",
+                        multiVals = "first")
+  # Remove duplicate ENTREZID rows
+  duplicate_test <- degs %>% group_by(ENTREZID) %>% tally() %>% filter(n != 1)
+  degs <- subset(degs, !(ENTREZID %in% duplicate_test$ENTREZID))
+  rownames(degs) <- degs$ENTREZID
+  reactome_pw <- reactomePathways(degs$ENTREZID) 
+  
+  # Hallmark
+  hallmark_gene_sets <- msigdbr(species = "human", category = "H") 
+  hallmark_pw <- split(x = hallmark_gene_sets$human_entrez_gene, f = hallmark_gene_sets$gs_name)
+}
+
+if(tolower(species) == "mouse") {
+  # BioCarta
+  carta_gene_sets <- msigdbr(species = "mouse", category = "C2", subcategory = "CP:BIOCARTA") 
+  carta_pw <- split(x = carta_gene_sets$entrez_gene, f = carta_gene_sets$gs_name)
+  
+  # Kyoto Encyclopedia of Genes and Genomes
+  data(kegg.sets.mm) 
+  kegg_pw <- kegg.sets.mm
+  
+  # Gene Ontology
+  data(go.sets.mm) 
+  go_pw <- go.sets.mm
+  
+  # Reactome
+  degs$ENTREZID <- mapIds(org.Mm.eg.db,
+                        keys = degs$ID, 
+                        column = "ENTREZID",
+                        keytype = "ENSEMBL",
+                        multiVals = "first")
+  # Remove duplicate ENTREZID rows
+  duplicate_test <- degs %>% group_by(ENTREZID) %>% tally() %>% filter(n != 1)
+  degs <- subset(degs, !(ENTREZID %in% duplicate_test$ENTREZID))
+  rownames(degs) <- degs$ENTREZID
+  reactome_pw <- reactomePathways(degs$ENTREZID) 
+  
+  # Hallmark
+  hallmark_gene_sets <- msigdbr(species = "mouse", category = "H") 
+  hallmark_pw <- split(x = hallmark_gene_sets$entrez_gene, f = hallmark_gene_sets$gs_name)
+}
+```
+
+# fgsea
+
+--------------------------------------------------------------------------------
+
+```{r}
+degs_ordered <- degs[order(degs$log2FoldChange_TXoverD, decreasing = TRUE),] 
+degs_ranked_FC <- degs_ordered$log2FoldChange_TXoverD
+names(degs_ranked_FC) <- degs_ordered$ENTREZID
+
+ProcessFGSEAoutput <- function(fgsea_results, pathways, direction, ranked_DEGs) {
+  # Function to reformat output from fgsea call
+  # Add asterisk column
+  fgsea_results$signif_label <- ifelse(fgsea_results$padj < 0.05, "*", "")
+  
+  # Rename pathways for easier functionalization of plotting
+  names(fgsea_results)[names(fgsea_results) == "pathway"] <- "terms"
+  
+  # Order output dataframe from largest to smallest NES
+  df <- fgsea_results[order(fgsea_results$NES, decreasing = TRUE),]
+  
+  df$leadingEdge <- NULL
+
+  return(df)
+}
+
+plotEnrichment_customize <- function(pathway_database, pw_name) {
+  # Make output directory enrichment plots for this database
+  outpath <- paste0(outdir, "/", format(Sys.Date(), "%Y%m%d"), "_", cell_line_name,"_", drug_name, "_enrichmentplots_", pathway_database)
+  if(!dir.exists(file.path(outpath))) { dir.create(file.path(outpath), recursive = TRUE) }
+  if(pathway_database == "BioCarta") {
+    if(length(carta_pw[[pw_name]]) < 25 | length(carta_pw[[pw_name]]) > 500) { return(NULL) }
+    plot <- plotEnrichment(carta_pw[[pw_name]], degs_ranked_FC, gseaParam = 1) +
+      labs(title = pw_name)
+  }
+  if(pathway_database == "KEGG") {
+    if(length(kegg_pw[[pw_name]]) < 25 | length(kegg_pw[[pw_name]]) >500) { return(NULL) }
+    plot <- plotEnrichment(kegg_pw[[pw_name]], degs_ranked_FC, gseaParam = 1) +
+      labs(title = pw_name)
+    pw_name <- gsub("/", "-", pw_name)
+  }
+  if(pathway_database == "GO") {
+    if(length(go_pw[[pw_name]]) < 25 | length(go_pw[[pw_name]]) > 500) { return(NULL) }
+    plot <- plotEnrichment(go_pw[[pw_name]], degs_ranked_FC, gseaParam = 1) +
+      labs(title = pw_name)
+    pw_name <- gsub("/", "-", pw_name)
+    pw_name <- gsub(":", ".", pw_name)
+  }
+  if(pathway_database == "Reactome") {
+    if(length(reactome_pw[[pw_name]]) < 25 | length(reactome_pw[[pw_name]]) > 500) { return(NULL) }
+    plot <- plotEnrichment(reactome_pw[[pw_name]], degs_ranked_FC, gseaParam = 1) +
+      labs(title = pw_name)
+    pw_name <- gsub("/", "-", pw_name)
+  }
+    if(pathway_database == "Hallmark") {
+      if(length(hallmark_pw[[pw_name]]) < 25 | length(hallmark_pw[[pw_name]]) > 500) { return(NULL) }
+    plot <- plotEnrichment(hallmark_pw[[pw_name]], degs_ranked_FC, gseaParam = 1) +
+      labs(title = pw_name)
+  }
+  ggsave(plot = plot, filename = paste0(pw_name, "_enrichment_plot.png"), path = outpath, dpi = 300, device = "png", units = "in", height = 4, width = 6)
+}
+```
+
+## BioCarta
+
+```{r}
+carta_res <- fgsea(carta_pw, stats = degs_ranked_FC, maxSize = 500, minSize = 25)
+carta_res_df <- ProcessFGSEAoutput(fgsea_results = carta_res, pathways = carta_pw, ranked_DEGs = degs_ranked_FC)
+write.csv(x = carta_res_df, file = paste0(outdir, "/", cell_line_name, "_", drug_name, "_fgsea_res_BioCarta.csv"), row.names = FALSE)
+invisible(lapply(names(carta_pw), plotEnrichment_customize, pathway_database = "BioCarta"))
+```
+
+## KEGG
+
+```{r}
+kegg_res <- fgsea(kegg_pw, stats = degs_ranked_FC, maxSize = 500, minSize = 25)
+kegg_res_df <- ProcessFGSEAoutput(fgsea_results = kegg_res, pathways = kegg_pw, ranked_DEGs = degs_ranked_FC)
+write.csv(x = kegg_res_df, file = paste0(outdir, "/", cell_line_name, "_", drug_name, "_fgsea_res_KEGG.csv"), row.names = FALSE)
+invisible(lapply(names(kegg_pw), plotEnrichment_customize, pathway_database = "KEGG"))
+```
+
+## GO
+
+```{r, warning=FALSE}
+go_res <- fgsea(go_pw, stats = degs_ranked_FC, maxSize = 500, minSize = 25)
+go_res_df <- ProcessFGSEAoutput(fgsea_results = go_res, pathways = go_pw, ranked_DEGs = degs_ranked_FC)
+write.csv(x = go_res_df, file = paste0(outdir, "/", cell_line_name, "_", drug_name, "_fgsea_res_GO.csv"), row.names = FALSE)
+invisible(lapply(names(go_pw), plotEnrichment_customize, pathway_database = "GO"))
+```
+
+## Reactome
+
+```{r}
+reactome_res <- fgsea(reactome_pw, stats = degs_ranked_FC, maxSize = 500, minSize = 25)
+reactome_res_df <- ProcessFGSEAoutput(fgsea_results = reactome_res, pathways = reactome_pw, ranked_DEGs = degs_ranked_FC)
+write.csv(x = reactome_res_df, file = paste0(outdir, "/", cell_line_name, "_", drug_name, "_fgsea_res_Reactome.csv"), row.names = FALSE)
+invisible(lapply(names(reactome_pw), plotEnrichment_customize, pathway_database = "Reactome"))
+```
+
+## Hallmark
+
+```{r, warning=FALSE}
+hallmark_res <- fgsea(hallmark_pw, stats = degs_ranked_FC, maxSize = 500, minSize = 25)
+hallmark_res_df <- ProcessFGSEAoutput(fgsea_results = hallmark_res, pathways = hallmark_pw, ranked_DEGs = degs_ranked_FC)
+write.csv(x = hallmark_res_df, file = paste0(outdir, "/", cell_line_name, "_", drug_name, "_fgsea_res_Hallmark.csv"), row.names = FALSE)
+invisible(lapply(names(hallmark_pw), plotEnrichment_customize, pathway_database = "Hallmark"))
+```
+
+# R Session Information
+
+--------------------------------------------------------------------------------
+
+```{r}
+session_info()
+
+end_time <- Sys.time()
+
+print(paste0(Sys.Date(), ", ", Sys.time()))
+print(paste0("Script runtime: ", round(end_time - start_time, digits = 2), " min"))
+print(paste0("All files generated by this script can be found here: ", outdir))
+```
+

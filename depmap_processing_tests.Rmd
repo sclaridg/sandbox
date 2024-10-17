@@ -1,0 +1,423 @@
+---
+title: "DepMap Processing"
+author: "Sally Claridge"
+date: "2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE}
+library(reshape2)
+library(tidyverse)
+library(magrittr)
+library(ggpubr)
+
+unfactorize <- function(df){
+   for(i in which(sapply(df, class) == "factor")) {
+    df[[i]] <- as.character(df[[i]])
+  }
+  return(df)
+}
+```
+
+# Processing (eval = F)
+
+--------------------------------------------------------------------------------
+
+22Q4:
+```{r, eval=FALSE}
+meta <- read.delim(file = "./22Q4/Model.csv", header = TRUE, sep = ",", check.names = FALSE, stringsAsFactors = FALSE)
+meta_filt <- dplyr::select(meta, ModelID, StrippedCellLineName, OncotreeCode, OncotreeLineage)
+meta_filt$OncotreeLineage[meta_filt$StrippedCellLineName == "CORL321"] <- "Lung" # From Cellosaurus https://www.cellosaurus.org/CVCL_2414
+
+dependency <- read.delim(file = "./22Q4/CRISPRGeneDependency.csv", header = TRUE, sep = ",", check.names = FALSE, stringsAsFactors = FALSE)
+# Remove Entrez gene IDs from colnames, format is "Gene (Entrez ID)"
+colnames(dependency) <- gsub(" .*", "", colnames(dependency))
+dependency_melt <- melt(data = dependency, id.vars = "ModelID", measure.vars = colnames(dependency[2:ncol(dependency)]), variable.name = "Gene", value.name = "dependency")
+dependency_melt <- unfactorize(dependency_melt)
+write.csv(x = dependency_melt, file = "./22Q4/dependency_melt", row.names = FALSE)
+
+effect <- read.delim(file = "./22Q4/CRISPRGeneEffect.csv", header = TRUE, sep = ",", check.names = FALSE, stringsAsFactors = FALSE)
+# Remove Entrez gene IDs from colnames, format is "Gene (Entrez ID)"
+colnames(effect) <- gsub(" .*", "", colnames(effect))
+colnames(effect)[1] <- "ModelID"
+effect_melt <- melt(data = effect, id.vars = "ModelID", measure.vars = colnames(effect[2:ncol(effect)]), variable.name = "Gene", value.name = "effect")
+effect_melt <- unfactorize(effect_melt)
+write.csv(x = effect_melt, file = "./22Q4/effect_melt", row.names = FALSE)
+
+ge <- read.delim(file = "./22Q4/OmicsExpressionProteinCodingGenesTPMLogp1.csv", header = TRUE, sep = ",", check.names = FALSE, stringsAsFactors = FALSE)
+# Remove Entrez gene IDs from colnames, format is "Gene (Entrez ID)"
+colnames(ge) <- gsub(" .*", "", colnames(ge))
+colnames(ge)[1] <- "ModelID"
+ge_melt <- melt(ge, id.vars = "ModelID", measure.vars = colnames(ge)[2:ncol(ge)], variable.name = "Gene", value.name = "TPM")
+ge_melt <- unfactorize(ge_melt)
+write.csv(x = ge_melt, file = "./22Q4/ge_melt.csv", row.names = FALSE)
+
+cn <- read.delim(file = "./22Q4/OmicsCNGene.csv", header = TRUE, sep = ",", check.names = FALSE, stringsAsFactors = FALSE)
+# Remove Entrez gene IDs from colnames, format is "Gene (Entrez ID)"
+colnames(cn) <- gsub(" .*", "", colnames(cn))
+colnames(cn)[1] <- "ModelID"
+cn_melt <- melt(data = cn, id.vars = "ModelID", measure.vars = colnames(cn[2:ncol(cn)]), variable.name = "Gene", value.name = "CN")
+cn_melt <- unfactorize(cn_melt)
+write.csv(x = cn_melt, file = "./22Q4/cn_melt.csv", row.names = FALSE)
+
+mut <- read.delim(file = "./22Q4/OmicsSomaticMutationsMatrixDamaging.csv", header = TRUE, sep = ",", check.names = FALSE, stringsAsFactors = FALSE)
+# Remove Entrez gene IDs from colnames, format is "Gene (Entrez ID)"
+colnames(mut) <- gsub(" .*", "", colnames(mut))
+colnames(mut)[1] <- "ModelID"
+mut_melt <- melt(data = mut, id.vars = "ModelID", measure.vars = colnames(mut[2:ncol(mut)]), variable.name = "Gene", value.name = "mut")
+mut_melt$mut <- ifelse(mut_melt$mut == 0, "Not damaging", "Damaging")
+mut_melt <- unfactorize(mut_melt)
+write.csv(x = cn_melt, file = "./22Q4/mut_melt.csv", row.names = FALSE)
+
+df_list <- c(dependency_melt, effect_melt, ge_melt, cn_melt, mut_melt)
+merged <- merge(merge(merge(merge(dependency_melt, effect_melt, all = TRUE, by = c("ModelID", "Gene")), ge_melt, all = TRUE, by = c("ModelID", "Gene")), cn_melt, all = TRUE, by = c("ModelID", "Gene")), mut_melt, all = TRUE, by = c("ModelID", "Gene"))
+
+merged <- merge(meta_filt, merged, all = TRUE, by = "ModelID")
+write.csv(x = merged, file = "./22Q4/merged.csv", row.names = FALSE)
+
+cul4_filt <- dplyr::filter(merged, Gene %in% c("CUL4A", "CUL4B"))
+cul4_filt$color_code <- ifelse(cul4_filt$OncotreeLineage == "Ovary/Fallopian Tube", "Yes", "No")
+write.csv(x = cul4_filt, file = "./22Q4/merged_CUL4_filtered.csv", row.names = FALSE)
+```
+
+21Q4:
+```{r, eval=FALSE}
+mut <- read.csv("./21Q4/CCLE_mutations.csv", header = TRUE, sep = ",", check.names = FALSE)
+mut <- filter(mut, Variant_Classification != "Silent")
+colnames(mut)[colnames(mut) == "Hugo_Symbol"] <- "Gene"
+write.table(mut, "./21Q4/mutations_nonsilent.csv", sep = ",", col.names = TRUE, row.names = FALSE)
+mut_binary <- unique(select(mut, Gene, DepMap_ID))
+mut_binary$Mutation_Status <- "1"
+write.csv(x = mut_binary, file = "./21Q4/mutations_binary.csv", row.names = FALSE)
+
+ge <- read.csv("./21Q4/CCLE_expression.csv", header = TRUE, sep = ",", check.names = FALSE)
+# Remove Entrez gene IDs from colnames, format is "Gene (Entrez ID)"
+colnames(ge) <- gsub(" .*", "", colnames(ge))
+colnames(ge)[1] <- "DepMap_ID"
+ge_melt <- melt(ge, id.vars = "DepMap_ID", measure.vars = colnames(ge)[2:ncol(ge)], variable.name = "Gene", value.name = "RSEM")
+ge_melt <- unfactorize(ge_melt)
+write.csv(x = ge_melt, file = "./21Q4/ge_melt.csv", row.names = FALSE)
+
+cn <- read.csv("./21Q4/CCLE_gene_cn.csv", header = TRUE, sep = ",", check.names = FALSE)
+# Remove Entrez gene IDs from colnames, format is "Gene (Entrez ID)"
+colnames(cn) <- gsub(" .*", "", colnames(cn))
+colnames(cn)[1] <- "DepMap_ID"
+cn_melt <- melt(data = cn, id.vars = "DepMap_ID", measure.vars = colnames(cn[2:ncol(cn)]), variable.name = "Gene", value.name = "CN")
+cn_melt <- unfactorize(cn_melt)
+write.csv(x = cn_melt, file = "./21Q4/cn_melt.csv", row.names = FALSE)
+
+crispr <- read.csv("./21Q4/CRISPR_gene_effect.csv", header = TRUE, sep = ",", check.names = FALSE)
+colnames(crispr) <- gsub(" .*", "", colnames(crispr))
+colnames(crispr)[1] <- "DepMap_ID"
+crispr_melt <- melt(data = crispr, id.vars = "DepMap_ID", measure.vars = colnames(crispr[2:ncol(crispr)]), variable.name = "Gene", value.name = "CERES")
+crispr_melt <- unfactorize(crispr_melt)
+write.csv(x = crispr_melt, file = "./21Q4/crispr_melt.csv", row.names = FALSE)
+```
+
+21Q4:
+```{r, eval=FALSE}
+meta <- read.csv("./21Q4/sample_info.csv", header = TRUE, sep = ",")
+meta_filt <- select(meta, DepMap_ID, cell_line_name, alias, primary_disease, lineage, lineage_subtype)
+
+ge <- read.csv("./21Q4/CCLE_expression.csv", header = TRUE, sep = ",", check.names = FALSE)
+# Remove Entrez gene IDs from colnames, format is "Gene (Entrez ID)"
+colnames(ge) <- gsub(" .*", "", colnames(ge))
+colnames(ge)[1] <- "DepMap_ID"
+
+ge_merged <- merge(meta_filt, ge, by = "DepMap_ID", all  = T)
+write.csv(x = ge_merged, file = "./21Q4/20220503_ge_full_metadata.csv", row.names = FALSE)
+
+# mut <- read.csv("./21Q4/mutations_nonsilent.csv", header = TRUE, sep = ",", check.names = FALSE)
+mut_binary <- read.csv("./21Q4/mutations_binary.csv", header = TRUE, sep = ",", check.names = FALSE)
+ge_melt <- read.csv("./21Q4/ge_melt.csv", header = TRUE, sep = ",", check.names = FALSE)
+cn_melt <- read.csv("./21Q4/cn_melt.csv", header = TRUE, sep = ",", check.names = FALSE)
+crispr_melt <- read.csv("./21Q4/crispr_melt.csv", header = TRUE, sep = ",", check.names = FALSE)
+
+meta <- read.csv("./21Q4/sample_info.csv", header = TRUE, sep = ",")
+meta_filt <- select(meta, DepMap_ID, cell_line_name, alias, primary_disease, lineage, lineage_subtype)
+
+df <- merge(merge(merge(merge(crispr_melt, mut_binary, by = c("DepMap_ID", "Gene"), all = TRUE), ge_melt, by = c("DepMap_ID", "Gene"), all = TRUE), cn_melt, by = c("DepMap_ID", "Gene"), all = TRUE), meta_filt, by = "DepMap_ID", all = TRUE)
+df$Mutation_Status[is.na(df$Mutation_Status)] <- "0"
+df <- df %>% drop_na(Gene)
+df <- unfactorize(df)
+write.csv(x = df, file = "./21Q4/all_merged.csv", row.names = FALSE)
+
+# df <- read.delim(file = "./21Q4/all_merged.csv", header = TRUE, sep = ",", check.names = FALSE, stringsAsFactors = FALSE)
+genes <- read.delim(file = "./20220210_CRL4_genes_of_interest.csv", header = TRUE, sep = ",", check.names = FALSE, stringsAsFactors = FALSE)
+
+filt <- filter(df, Gene %in% genes$gene_name)
+write.csv(x = filt, file = "./21Q4/20220224_all_merged_filtered_CRL4_genes_of_interest.csv", row.names = FALSE)
+```
+
+# Load
+
+--------------------------------------------------------------------------------
+
+```{r, eval=FALSE}
+genes <- read.delim(file = "./20220210_CRL4_genes_of_interest.csv", header = TRUE, sep = ",", check.names = FALSE, stringsAsFactors = FALSE)
+df <- read.delim(file = "./21Q4/20220224_all_merged_filtered_CRL4_genes_of_interest.csv", header = TRUE, sep = ",", check.names = FALSE, stringsAsFactors = FALSE)
+df$Ovarian_Status <- with(df, ifelse(lineage == "ovary", "Ovarian", "Other"))
+
+merged <- read.delim(file = "./22Q4/merged.csv", header = TRUE, sep = ",", check.names = FALSE, stringsAsFactors = FALSE)
+```
+
+```{r}
+meta <- read.delim(file = "./22Q4/Model.csv", header = TRUE, sep = ",", check.names = FALSE, stringsAsFactors = FALSE)
+meta <- dplyr::select(meta, ModelID, StrippedCellLineName, OncotreeCode, OncotreeLineage)
+meta$OncotreeLineage[meta$StrippedCellLineName == "CORL321"] <- "Lung" # From Cellosaurus https://www.cellosaurus.org/CVCL_2414
+```
+
+
+# DepMap EDA
+
+--------------------------------------------------------------------------------
+
+```{r, eval=FALSE}
+lineage_count <- meta %>% group_by(OncotreeLineage) %>% count()
+lineage_count$color_code <- ifelse(lineage_count$OncotreeLineage == "Ovary/Fallopian Tube", "Yes", "No")
+
+lineage_bar <- ggplot(lineage_count, aes(x = reorder(OncotreeLineage, -n), y = n)) +
+  geom_bar(stat = "identity", aes(fill = color_code), color = "black") +
+  scale_fill_manual(values = c("Yes" = "darkcyan",  "No" = "darkorchid4")) +
+  geom_text(aes(label = n), vjust = -1, size = 3) +
+  coord_cartesian(ylim = c(0, 250)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), legend.position = "none") +
+  labs(x = "Lineage (Oncotree)", y = "Number of Cell Lines")
+
+ggsave(plot = lineage_bar, filename = paste0(format(Sys.Date(), "%Y%m%d"), "_lineage_barplot.png"), path = "./22Q4/", units = "in", dpi = 300, width = 7, height = 4)
+```
+
+# CUL4 EDA
+
+--------------------------------------------------------------------------------
+
+```{r}
+cul4_filt <- read.delim(file = "./22Q4/merged_CUL4_filtered.csv", header = TRUE, sep = ",", check.names = FALSE, stringsAsFactors = FALSE)
+```
+
+
+```{r, eval=FALSE}
+cul4a_dep_box <- ggplot(dplyr::filter(cul4_filt, Gene == "CUL4A"), aes(x = reorder(OncotreeLineage, -dependency, na.rm = TRUE), y = dependency)) +
+  geom_boxplot(aes(fill = color_code), color = "black", outlier.size = 1, outlier.alpha = 0.6) +
+  scale_fill_manual(values = c("Yes" = "darkcyan",  "No" = "darkorchid4")) +
+  theme_bw() +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.2), labels = seq(0, 1, by = 0.2)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), legend.position = "none") +
+  labs(x = "Lineage (Oncotree)", y = "Dependency Score", title = "CUL4A Dependency")
+
+cul4b_dep_box <- ggplot(dplyr::filter(cul4_filt, Gene == "CUL4B"), aes(x = reorder(OncotreeLineage, -dependency, na.rm = TRUE), y = dependency)) +
+  geom_boxplot(aes(fill = color_code), color = "black", outlier.size = 1, outlier.alpha = 0.6) +
+  scale_fill_manual(values = c("Yes" = "darkcyan",  "No" = "darkorchid4")) +
+  theme_bw() +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.2), labels = seq(0, 1, by = 0.2)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), legend.position = "none") +
+  labs(x = "Lineage (Oncotree)", y = "Dependency Score", title = "CUL4B Dependency")
+
+cul4a_eff_box <- ggplot(dplyr::filter(cul4_filt, Gene == "CUL4A"), aes(x = reorder(OncotreeLineage, -effect, na.rm = TRUE), y = effect)) +
+  geom_boxplot(aes(fill = color_code), color = "black", outlier.size = 1, outlier.alpha = 0.6) +
+  scale_fill_manual(values = c("Yes" = "darkcyan",  "No" = "darkorchid4")) +
+  theme_bw() +
+  scale_y_continuous(breaks = seq(-2, 2, by = 0.2), labels = seq(-2, 2, by = 0.2)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), legend.position = "none") +
+  labs(x = "Lineage (Oncotree)", y = "Gene Effect", title = "CUL4A Gene Effect")
+
+cul4b_eff_box <- ggplot(dplyr::filter(cul4_filt, Gene == "CUL4B"), aes(x = reorder(OncotreeLineage, -effect, na.rm = TRUE), y = effect)) +
+  geom_boxplot(aes(fill = color_code), color = "black", outlier.size = 1, outlier.alpha = 0.6) +
+  scale_fill_manual(values = c("Yes" = "darkcyan",  "No" = "darkorchid4")) +
+  theme_bw() +
+  scale_y_continuous(breaks = seq(-2, 2, by = 0.2), labels = seq(-2, 2, by = 0.2)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), legend.position = "none") +
+  labs(x = "Lineage (Oncotree)", y = "Gene Effect", title = "CUL4B Gene Effect")
+
+cul4a_tpm_box <- ggplot(dplyr::filter(cul4_filt, Gene == "CUL4A"), aes(x = reorder(OncotreeLineage, -TPM, na.rm = TRUE), y = TPM)) +
+  geom_boxplot(aes(fill = color_code), color = "black", outlier.size = 1, outlier.alpha = 0.6) +
+  scale_fill_manual(values = c("Yes" = "darkcyan",  "No" = "darkorchid4")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), legend.position = "none") +
+  labs(x = "Lineage (Oncotree)", y = "Expression (TPM)", title = "CUL4A Gene Expression")
+
+cul4b_tpm_box <- ggplot(dplyr::filter(cul4_filt, Gene == "CUL4B"), aes(x = reorder(OncotreeLineage, -TPM, na.rm = TRUE), y = TPM)) +
+  geom_boxplot(aes(fill = color_code), color = "black", outlier.size = 1, outlier.alpha = 0.6) +
+  scale_fill_manual(values = c("Yes" = "darkcyan",  "No" = "darkorchid4")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), legend.position = "none") +
+  labs(x = "Lineage (Oncotree)", y = "Expression (TPM)", title = "CUL4B Gene Expression")
+
+cul4a_cn_box <- ggplot(dplyr::filter(cul4_filt, Gene == "CUL4A"), aes(x = reorder(OncotreeLineage, -CN, na.rm = TRUE), y = CN)) +
+  geom_boxplot(aes(fill = color_code), color = "black", outlier.size = 1, outlier.alpha = 0.6) +
+  scale_fill_manual(values = c("Yes" = "darkcyan",  "No" = "darkorchid4")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), legend.position = "none") +
+  labs(x = "Lineage (Oncotree)", y = "Copy Number", title = "CUL4A Copy Number")
+
+cul4b_cn_box <- ggplot(dplyr::filter(cul4_filt, Gene == "CUL4B"), aes(x = reorder(OncotreeLineage, -CN, na.rm = TRUE), y = CN)) +
+  geom_boxplot(aes(fill = color_code), color = "black", outlier.size = 1, outlier.alpha = 0.6) +
+  scale_fill_manual(values = c("Yes" = "darkcyan",  "No" = "darkorchid4")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), legend.position = "none") +
+  labs(x = "Lineage (Oncotree)", y = "Copy Number", title = "CUL4B Copy Number")
+
+ggsave(plot = cul4a_dep_box, filename = paste0(format(Sys.Date(), "%Y%m%d"), "_cul4a_dependency_boxplot.png"), path = "./22Q4/", units = "in", dpi = 300, width = 7, height = 4)
+
+ggsave(plot = cul4b_dep_box, filename = paste0(format(Sys.Date(), "%Y%m%d"), "_cul4b_dependency_boxplot.png"), path = "./22Q4/", units = "in", dpi = 300, width = 7, height = 4)
+
+ggsave(plot = cul4a_eff_box, filename = paste0(format(Sys.Date(), "%Y%m%d"), "_cul4a_geneeffect_boxplot.png"), path = "./22Q4/", units = "in", dpi = 300, width = 7, height = 4)
+
+ggsave(plot = cul4b_eff_box, filename = paste0(format(Sys.Date(), "%Y%m%d"), "_cul4b_geneeffect_boxplot.png"), path = "./22Q4/", units = "in", dpi = 300, width = 7, height = 4)
+
+ggsave(plot = cul4a_tpm_box, filename = paste0(format(Sys.Date(), "%Y%m%d"), "_cul4a_TPM_boxplot.png"), path = "./22Q4/", units = "in", dpi = 300, width = 7, height = 4)
+
+ggsave(plot = cul4b_tpm_box, filename = paste0(format(Sys.Date(), "%Y%m%d"), "_cul4b_TPM_boxplot.png"), path = "./22Q4/", units = "in", dpi = 300, width = 7, height = 4)
+
+ggsave(plot = cul4a_cn_box, filename = paste0(format(Sys.Date(), "%Y%m%d"), "_cul4a_CN_boxplot.png"), path = "./22Q4/", units = "in", dpi = 300, width = 7, height = 4)
+
+ggsave(plot = cul4b_cn_box, filename = paste0(format(Sys.Date(), "%Y%m%d"), "_cul4b_CN_boxplot.png"), path = "./22Q4/", units = "in", dpi = 300, width = 7, height = 4)
+```
+
+
+## Dependency x TPM
+
+```{r, eval=FALSE}
+cul4a_data <- dplyr::filter(cul4_filt, Gene == "CUL4A")
+
+fit <- lm(dependency ~ TPM, data = cul4a_data)
+x <- round(coef(fit)[2], digits = 3)
+y <- round(coef(fit)[1], digits = 3)
+r2 <- round(summary(fit)$adj.r.squared, digits = 3)
+fit_eqn <- bquote("y" == .(x) * "x"^2 ~ "+" ~ .(y) * "," ~ "R"^2 * ":" ~ .(r2))
+
+pear <- cor.test(x = cul4a_data$TPM, y = cul4a_data$dependency, method = "pearson")
+pear_r <- round(pear$estimate, digits = 3)
+pear_p <- format(pear$p.value, scientific = TRUE, digits = 3)
+pear_lab <- paste0("Pearson: ", pear_r, ", p = ", pear_p)
+
+spear <- cor.test(x = cul4a_data$TPM, y = cul4a_data$dependency, method = "spearman")
+spear_r <- round(spear$estimate, digits = 3)
+spear_p <- format(spear$p.value, scientific = TRUE, digits = 3)
+spear_lab <- paste0("Spearman: ", spear_r, ", p = ", spear_p)
+
+subtitle_text <- paste0(pear_lab, "\n", spear_lab)
+
+cul4a_TPM_x_dep <- ggplot(data = cul4a_data, aes(x = TPM, y = dependency, color = color_code)) +
+  geom_point(alpha = 0.5) +
+  geom_point(data = dplyr::filter(cul4_filt, OncotreeLineage == "Ovary/Fallopian Tube"), aes(x = TPM, y = dependency, color = color_code)) +
+  scale_color_manual(values = c("Yes" = "darkcyan",  "No" = "darkorchid4")) +
+  geom_smooth(method = "lm") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  labs(y = "Dependency Score", x = "Expression (TPM)", color = "Ovarian", title = "CUL4A",
+       subtitle = subtitle_text) +
+  theme(plot.subtitle = element_text(size = 10))
+
+ggsave(plot = cul4a_TPM_x_dep, filename = paste0(format(Sys.Date(), "%Y%m%d"), "_cul4a_GExDep.png"), path = "./22Q4/", units = "in", dpi = 300, width = 6, height = 6)
+
+cul4b_data <- dplyr::filter(cul4_filt, Gene == "CUL4B")
+
+fit <- lm(dependency ~ TPM, data = cul4b_data)
+x <- round(coef(fit)[2], digits = 3)
+y <- round(coef(fit)[1], digits = 3)
+r2 <- round(summary(fit)$adj.r.squared, digits = 3)
+fit_eqn <- bquote("y" == .(x) * "x"^2 ~ "+" ~ .(y) * "," ~ "R"^2 * ":" ~ .(r2))
+
+pear <- cor.test(x = cul4b_data$TPM, y = cul4b_data$dependency, method = "pearson")
+pear_r <- round(pear$estimate, digits = 3)
+pear_p <- format(pear$p.value, scientific = TRUE, digits = 3)
+pear_lab <- paste0("Pearson: ", pear_r, ", p = ", pear_p)
+
+spear <- cor.test(x = cul4b_data$TPM, y = cul4b_data$dependency, method = "spearman")
+spear_r <- round(spear$estimate, digits = 3)
+spear_p <- format(spear$p.value, scientific = TRUE, digits = 3)
+spear_lab <- paste0("Spearman: ", spear_r, ", p = ", spear_p)
+
+subtitle_text <- paste0(pear_lab, "\n", spear_lab)
+
+cul4b_TPM_x_dep <- ggplot(data = cul4b_data, aes(x = TPM, y = dependency, color = color_code)) +
+  geom_point(alpha = 0.5) +
+  geom_point(data = dplyr::filter(cul4_filt, OncotreeLineage == "Ovary/Fallopian Tube"), aes(x = TPM, y = dependency, color = color_code)) +
+  scale_color_manual(values = c("Yes" = "darkcyan",  "No" = "darkorchid4")) +
+  geom_smooth(method = "lm") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  labs(y = "Dependency Score", x = "Expression (TPM)", color = "Ovarian", title = "CUL4B",
+       subtitle = subtitle_text) +
+  theme(plot.subtitle = element_text(size = 10))
+
+ggsave(plot = cul4b_TPM_x_dep, filename = paste0(format(Sys.Date(), "%Y%m%d"), "_cul4b_GExDep.png"), path = "./22Q4/", units = "in", dpi = 300, width = 6, height = 6)
+```
+
+## Gene Effect x TPM
+
+```{r, eval=FALSE}
+cul4a_data <- dplyr::filter(cul4_filt, Gene == "CUL4A")
+
+fit <- lm(effect ~ TPM, data = cul4a_data)
+x <- round(coef(fit)[2], digits = 3)
+y <- round(coef(fit)[1], digits = 3)
+r2 <- round(summary(fit)$adj.r.squared, digits = 3)
+fit_eqn <- bquote("y" == .(x) * "x"^2 ~ "+" ~ .(y) * "," ~ "R"^2 * ":" ~ .(r2))
+
+pear <- cor.test(x = cul4a_data$TPM, y = cul4a_data$effect, method = "pearson")
+pear_r <- round(pear$estimate, digits = 3)
+pear_p <- format(pear$p.value, scientific = TRUE, digits = 3)
+pear_lab <- paste0("Pearson: ", pear_r, ", p = ", pear_p)
+
+spear <- cor.test(x = cul4a_data$TPM, y = cul4a_data$effect, method = "spearman")
+spear_r <- round(spear$estimate, digits = 3)
+spear_p <- format(spear$p.value, scientific = TRUE, digits = 3)
+spear_lab <- paste0("Spearman: ", spear_r, ", p = ", spear_p)
+
+subtitle_text <- paste0(pear_lab, "\n", spear_lab)
+
+cul4a_TPM_x_eff <- ggplot(data = cul4a_data, aes(x = TPM, y = effect, color = color_code)) +
+  geom_point(alpha = 0.5) +
+  geom_point(data = dplyr::filter(cul4_filt, OncotreeLineage == "Ovary/Fallopian Tube"), aes(x = TPM, y = effect, color = color_code)) +
+  scale_color_manual(values = c("Yes" = "darkcyan",  "No" = "darkorchid4")) +
+  geom_smooth(method = "lm") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  labs(y = "Gene Effect Score", x = "Expression (TPM)", color = "Ovarian", title = "CUL4A",
+       subtitle = subtitle_text) +
+  theme(plot.subtitle = element_text(size = 10))
+
+ggsave(plot = cul4a_TPM_x_eff, filename = paste0(format(Sys.Date(), "%Y%m%d"), "_cul4a_GExEff.png"), path = "./22Q4/", units = "in", dpi = 300, width = 6, height = 6)
+
+cul4b_data <- dplyr::filter(cul4_filt, Gene == "CUL4B")
+
+fit <- lm(effect ~ TPM, data = cul4b_data)
+x <- round(coef(fit)[2], digits = 3)
+y <- round(coef(fit)[1], digits = 3)
+r2 <- round(summary(fit)$adj.r.squared, digits = 3)
+fit_eqn <- bquote("y" == .(x) * "x"^2 ~ "+" ~ .(y) * "," ~ "R"^2 * ":" ~ .(r2))
+
+pear <- cor.test(x = cul4b_data$TPM, y = cul4b_data$effect, method = "pearson")
+pear_r <- round(pear$estimate, digits = 3)
+pear_p <- format(pear$p.value, scientific = TRUE, digits = 3)
+pear_lab <- paste0("Pearson: ", pear_r, ", p = ", pear_p)
+
+spear <- cor.test(x = cul4b_data$TPM, y = cul4b_data$effect, method = "spearman")
+spear_r <- round(spear$estimate, digits = 3)
+spear_p <- format(spear$p.value, scientific = TRUE, digits = 3)
+spear_lab <- paste0("Spearman: ", spear_r, ", p = ", spear_p)
+
+subtitle_text <- paste0(pear_lab, "\n", spear_lab)
+
+cul4b_TPM_x_eff <- ggplot(data = cul4b_data, aes(x = TPM, y = effect, color = color_code)) +
+  geom_point(alpha = 0.5) +
+  geom_point(data = dplyr::filter(cul4_filt, OncotreeLineage == "Ovary/Fallopian Tube"), aes(x = TPM, y = effect, color = color_code)) +
+  scale_color_manual(values = c("Yes" = "darkcyan",  "No" = "darkorchid4")) +
+  geom_smooth(method = "lm") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  labs(y = "Gene Effect Score", x = "Expression (TPM)", color = "Ovarian", title = "CUL4B",
+       subtitle = subtitle_text) +
+  theme(plot.subtitle = element_text(size = 10))
+
+ggsave(plot = cul4b_TPM_x_eff, filename = paste0(format(Sys.Date(), "%Y%m%d"), "_cul4b_GExEff.png"), path = "./22Q4/", units = "in", dpi = 300, width = 6, height = 6)
+```

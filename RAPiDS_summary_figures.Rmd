@@ -1,0 +1,329 @@
+---
+title: "Processing RAPiDS II: Summary Figures"
+author: "Sally Claridge"
+date: "22 December 2021"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+set.seed(1234)
+knitr::opts_chunk$set(echo = TRUE)
+options(scipen = 6, digits = 4)
+```
+
+# Code to Always Run
+
+--------------------------------------------------------------------------------
+
+Run all code chunks in the `Code to Always Run` section when you start an R session. You only need to run this code once per session if you are only using one set of Global Variables. Run this section again if you change any of the Global Variables.
+
+## Global variables
+
+--------------------------------------------------------------------------------
+
+**Edit this section**
+
+Enter appropriate variables here:
+```{r global_variables}
+# Path to input data file
+data_path <- "/Users/claris01/Desktop/projects/RAPiDS_analysis/21.12.16 Kidney RAPIDS.csv"
+
+# Set care levels for each drug, "Experimental" or "SOC"
+meta_path <- "/Users/claris01/Desktop/projects/RAPiDS_analysis/21.12.16 Kidney  Care Levels (1).csv"
+
+# Path to directory where you want the plots to be saved (if this directory doesn't exist, this script will make a new directory)
+outpath <- "./20211222_testing"
+```
+
+## Packages and functions
+
+--------------------------------------------------------------------------------
+
+**Do not edit this section**
+
+Load appropriate packages:
+```{r, message=FALSE, warning=FALSE}
+pkgs <- c("tidyverse", "reshape2", "magrittr", "ggplot2", "drc", "PharmacoGx", "plotly", "htmlwidgets", "ComplexHeatmap", "ggpubr")
+
+check <- sapply(pkgs, require, warn.conflicts = TRUE, character.only = TRUE)
+if(any(!check)){
+  pkgs.missing <- pkgs[!check]
+  install.packages(pkgs.missing)
+  check <- sapply(pkgs.missing, require, warn.conflicts = TRUE, character.only = TRUE)
+}
+
+FitDRC <- function(dataset) {
+  require(drc)
+
+  # Fit drc object
+  drc_fit <- drm(norm ~ Concentration, fct = L.4(), data = dataset)
+
+  return(drc_fit)
+}
+
+ComputeGrowthMetrics <- function(drc_fit, dataset) {
+  minimum <- min(dataset$Concentration)
+  maximum <- max(dataset$Concentration)
+  
+  # Calculate ED30 and ED50 from dose response curve object
+  ic <- data.frame(ED(drc_fit, c(70, 50),
+                      interval = "delta",
+                      type = "relative",
+                      display = FALSE))
+  ic30 <- ic$Estimate[1]
+  # if(ic30 <= maximum & ic30 >= minimum) { ic30 <- ic30 }
+  # if(ic30 < minimum) { ic30 <- "-" }
+  # if(ic30 > maximum) { ic30 <- "+" }
+  
+  ic50 <- ic$Estimate[2]
+  # if(ic50 <= maximum & ic50 >= minimum) { ic50 <- ic50 }
+  # if(ic50 < minimum) { ic50 <- "-" }
+  # if(ic50 > maximum) { ic50 <- "+" }
+
+  growth_metrics <- c("Drug" = unique(dataset$Drug), "FGP_Number" = unique(dataset$FGP_Number), "IC30" = ic30, "IC50" = ic50)
+
+  return(growth_metrics)
+}
+```
+
+## Load data
+
+--------------------------------------------------------------------------------
+
+**Do not edit this section**
+
+Load in the RAPiDS data indicated by the `data_path` variable given in the *Global variables* section:
+```{r}
+dataframe <- read.delim(file = data_path, header = TRUE, sep = ",", check.names = FALSE, stringsAsFactors = FALSE)
+
+metadata <- read.delim(file = meta_path, header = TRUE, sep = ",", check.names = FALSE, stringsAsFactors = FALSE)
+
+# Comput norm column if it does not exist by dividing raw CellTiter-Glo values by the appropriate control values
+if(!("norm" %in% colnames(dataframe))) { dataframe$norm <- dataframe$Raw_CTG / dataframe$Control }
+```
+
+Create output directory indicated by the `outpath` variable given in the *Global variables* section:
+```{r}
+# Check outpath ends with "/"
+if(endsWith(outpath, "/")) { outpath <- outpath }
+if(!endsWith(outpath, "/")) { outpath <- paste0(outpath, "/") }
+# Check if directory exists, else make directory
+if(!dir.exists(file.path(outpath))) { dir.create(file.path(outpath), recursive = TRUE) }
+```
+
+# Code to Make Plots
+
+--------------------------------------------------------------------------------
+
+Run code chunks in each of the subsections below depending on which plot you want to make.
+
+## Curves colored by drug per FGP number
+
+--------------------------------------------------------------------------------
+
+**Edit this chunk**
+```{r}
+fgp_number <- "FGP68"
+
+drugnames <- c("Alpelisib", "Alpelisib_Volasertib", "Volasertib")
+# drugnames <- c("Alpelisib")
+# Can be 1, 2, or 3 drugnames, written exactly as they are in the CSV that was loaded
+# e.g. c("X", "Y", "Z") OR c("X", "Z") OR c("Z")
+
+colornames <- c("darkcyan", "darksalmon", "goldenrod2")
+# Can be 1, 2, or 3 colors, corresponding to the drug order above
+# See color names available here: http://www.stat.columbia.edu/~tzheng/files/Rcolor.pdf
+
+blood_plasma_concs <- data.frame(Drug = drugnames, bp_conc = c(3, NA, 1))
+# Set blood plasma levels in the item called bp_conc, corresponding to the drug order above
+# Use NA for the drug blood plasma levels that you do not want on the plot
+# e.g. bp_conc = c(3, 5, 1) OR bp_conc = c(3, 5, NA) OR bp_conc = c(NA, 5, NA)
+```
+
+**Do not edit this chunk**
+```{r}
+# Check data
+if(!(fgp_number %in% dataframe$FGP_Number)) { stop("Error: The specified FGP number is not in the input CSV. Make sure there is not a typo.") }
+if(length(intersect(drugnames, unique(dataframe$Drug))) != length(drugnames)) { stop("Error: At least one of specified drugs is not in the input CSV. Make sure there is not a typo.") }
+
+# Filter dataframe
+plot_df <- filter(dataframe, Drug %in% drugnames)
+plot_df <- filter(plot_df, FGP_Number == fgp_number)
+
+# Make plot object
+plot_drc <- ggplot(data = plot_df, mapping = aes(x = Concentration, y = norm, color = Drug)) +
+  geom_point(alpha = 0.5) +
+  stat_smooth(method = "drm",
+              se = FALSE,
+              method.args = list(fct = L.4())) +
+  coord_cartesian(ylim = c(0, signif(max(plot_df$norm), digits = 2))) +
+  geom_vline(data = blood_plasma_concs, aes(color = Drug, xintercept = bp_conc), lty = 2) +
+  scale_color_manual(breaks = drugnames, values = colornames) +
+  scale_x_log10() +
+  theme_bw() +
+  labs(x = "Concentration (uM)",
+       y = "Relative intensity (CellTiter-Glo)",
+       title = fgp_number)
+
+# Create unique name for PNG
+png_name <- paste0(format(Sys.Date(), "%Y%m%d"), "_", fgp_number, "_DRC.png")
+if(!file.exists(paste0(outpath, png_name))) { png_name <- png_name }
+if(file.exists(paste0(outpath, png_name))) {
+  print("Filename exists. Re-naming new file with time-stamp (HHMM) to not overwrite existing file.")
+  png_name <- paste0(format(Sys.time(), "%H%M"), "_", png_name)
+}
+
+# Save file
+ggsave(filename = png_name,
+       path = outpath,
+       plot = plot_drc,
+       dpi = 300, width = 7, height = 5.5, units = "in", device = "png")
+
+# Success message
+writeLines(paste0("ALL DONE! :D","\n", "Output file: ", outpath, png_name))
+```
+
+## Curves colored by FGP per drug
+
+--------------------------------------------------------------------------------
+
+**Edit this chunk**
+```{r}
+drugname <- "Volasertib"
+# Set blood plasma concentration as a character value
+
+blood_plasma_conc <- 3
+# Set blood plasma concentration as a numeric value
+
+fgp_numbers <- c("FGP68", "FGP73")
+# Select specific FGPs
+
+# Remove `#` from line below if you want all FGP numbers in the input CSV on the plot
+# fgp_numbers <- unique(dataframe$FGP_Number)
+
+colornames <- c("darkcyan", "darksalmon")
+# Choose the same number of colors corresponding to the drug order above
+# See color names available here: http://www.stat.columbia.edu/~tzheng/files/Rcolor.pdf
+
+# Remove `#` from line below if you are plotting all FGP numbers in the input CSV
+# colornames <- palette(rainbow(length(fgp_numbers)))
+```
+
+**Do not edit this chunk**
+```{r}
+# Check data
+if(!(drugname %in% dataframe$Drug)) { stop("Error: The specified drugname is not in the input CSV. Make sure there is not a typo.") }
+if(length(intersect(fgp_numbers, unique(dataframe$FGP_Number))) != length(fgp_numbers)) { stop("Error: At least one of specified FGP numbers is not in the input CSV. Make sure there is not a typo.") }
+
+# Filter dataframe
+plot_df <- filter(dataframe, Drug == drugname)
+plot_df <- filter(plot_df, FGP_Number %in% fgp_numbers)
+
+# Make plot object
+plot_drc <- ggplot(data = plot_df, mapping = aes(x = Concentration, y = norm, color = FGP_Number)) +
+  geom_point(alpha = 0.5) +
+  stat_smooth(method = "drm",
+              se = FALSE,
+              method.args = list(fct = L.4())) +
+  coord_cartesian(ylim = c(0, signif(max(plot_df$norm), digits = 2))) +
+  geom_vline(color = "black", xintercept = blood_plasma_conc, lty = 2) +
+  scale_color_manual(breaks = fgp_numbers, values = colornames) +
+  scale_x_log10() +
+  theme_bw() +
+  labs(x = "Concentration (uM)",
+       y = "Relative intensity (CellTiter-Glo)",
+       title = drugname)
+
+# Create unique PNG name
+png_name <- paste0(format(Sys.Date(), "%Y%m%d"), "_", drugname, "_DRC.png")
+if(!file.exists(paste0(outpath, png_name))) { png_name <- png_name }
+if(file.exists(paste0(outpath, png_name))) {
+  print("Filename exists. Re-naming new file with time-stamp (HHMM) to not overwrite existing file.")
+  png_name <- paste0(format(Sys.time(), "%H%M"), "_", png_name)
+}
+
+# Save file
+ggsave(filename = png_name,
+       path = outpath,
+       plot = plot_drc,
+       dpi = 300, width = 7, height = 5.5, units = "in", device = "png")
+
+# Success message
+writeLines(paste0("ALL DONE! :D","\n", "Output file: ", outpath, png_name))
+```
+
+
+## Boxplots of experimental vs. 1st/2nd line therapies
+
+--------------------------------------------------------------------------------
+
+**Edit this chunk**
+
+Select colors for each of the care_type values:
+```{r}
+care_type_colors <- c("red", "gold", "darkorchid4", "cyan3")
+# See color names available here: http://www.stat.columbia.edu/~tzheng/files/Rcolor.pdf
+```
+
+**Do not edit this chunk**
+```{r, warning=FALSE}
+# Check metadata
+if(length(unique(metadata$care_type)) != 4) { stop("Error: There are more than 4 unique care_types specified. This script only handles 4.") }
+
+# Calculate growth metrics
+df_split <- dataframe %>% group_split(Drug, FGP_Number)
+drc_fits <- lapply(df_split, FitDRC)
+metrics_list <- mapply(FUN = ComputeGrowthMetrics, drc_fit = drc_fits, dataset = df_split, SIMPLIFY = FALSE)
+metrics <- as.data.frame(do.call(rbind, metrics_list))
+metrics <- merge(metrics, metadata, by = "Drug", all = TRUE)
+metrics <- transform(metrics, IC30 = as.numeric(IC30), IC50 = as.numeric(IC50))
+
+# All FGPs on the boxplots
+plot1 <- ggplot(data = metrics, aes(x = care_level, y = IC50)) +
+  geom_boxplot(outlier.shape = NA, width = 0.5) +
+  geom_point(aes(color = care_type), alpha = 0.7, position = "jitter", ) +
+  scale_color_manual(values = care_type_colors, breaks = c("1st Line", "2nd Line", "Combination", "Single Agent")) +
+  labs(y = "IC50 (uM)", x = "Care Level", color = "Therapy Type") +
+  theme_bw()
+
+# Boxplots separated by FGP
+plot2 <- ggplot(data = metrics, aes(x = care_level, y = IC50)) +
+  geom_boxplot(outlier.shape = NA, width = 0.5) +
+  geom_point(aes(color = care_type), alpha = 0.7, position = "jitter") +
+  stat_compare_means(aes(label = ..p.signif..), label.x = 1.5) +
+  facet_wrap(~ FGP_Number, nrow = 1) +
+  scale_color_manual(values = care_type_colors, breaks = c("1st Line", "2nd Line", "Combination", "Single Agent")) +
+  labs(y = "IC50 (uM)", x = "Care Level", color = "Therapy Type") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+# Create unique names for the PNGs
+png1_name <- paste0(format(Sys.Date(), "%Y%m%d"), "_all_boxplot.png")
+if(!file.exists(paste0(outpath, png1_name))) { png1_name <- png1_name }
+if(file.exists(paste0(outpath, png1_name))) {
+  print("Filename exists. Re-naming new file with time-stamp (HHMM) to not overwrite existing file.")
+  png1_name <- paste0(format(Sys.time(), "%H%M"), "_", png1_name)
+}
+
+png2_name <- paste0(format(Sys.Date(), "%Y%m%d"), "_byFGP_boxplot.png")
+if(!file.exists(paste0(outpath, png2_name))) { png_name <- png2_name }
+if(file.exists(paste0(outpath, png2_name))) {
+  print("Filename exists. Re-naming new file with time-stamp (HHMM) to not overwrite existing file.")
+  png2_name <- paste0(format(Sys.time(), "%H%M"), "_", png2_name)
+}
+
+# Save files
+ggsave(filename = png1_name, path = outpath, plot = plot1, dpi = 300, width = 7, height = 5.5, units = "in", device = "png")
+ggsave(filename = png2_name, path = outpath, plot = plot2, dpi = 300, width = 12, height = 5.5, units = "in", device = "png")
+
+# Success message
+writeLines(paste0("ALL DONE! :D","\n", "Output files saved to ", outpath, ": ", "\n", "Files: ", png1_name, " and ", png2_name))
+```
+
+# Session information
+
+--------------------------------------------------------------------------------
+
+```{r}
+sessionInfo()
+```

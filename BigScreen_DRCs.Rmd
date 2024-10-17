@@ -1,0 +1,390 @@
+---
+title: "BigScreen_DRCs"
+output: html_document
+date: "2023-10-31"
+---
+
+# Purpose
+
+--------------------------------------------------------------------------------
+
+This script's function is to
+1. read in all `processed_data.csv` files in a given folder and concatenate them into a single file,
+2. filter the data for a single drug of interest (provided by you), and
+3. generate a single plot of overlaid dose response curves for all cell lines screened with the drug of interest.
+  3.a. Assign a color to all cell lines.
+    3.a.i. Add blood plasma concentration line to this plot. Must edit the chunk; default is prior saved value.
+  3.b. Assign a color to only specified cell lines (edit chunk in this section).
+    3.b.i. Add blood plasma concentration line to this plot. Must edit the chunk; default is prior saved value.
+  
+Chunks prefaced with **Edit this chunk:** have notes on what to edit. Otherwise, just run the chunk as-is.
+
+# Data input requirements
+
+--------------------------------------------------------------------------------
+
+Input CSV file(s) must contain at least the following case-sensitive column names:
+1. `concentration`
+2. `drug`
+3. `cell_line`
+4. `norm`
+where `norm` is your normalized cell viability/inhibition readout values.
+
+Input data can be a single concatenated CSV of all input data or can be split into individual CSV files that will be concatenated in Part 1.
+
+Dose response curves for the drug of interest will be generated for each cell line, derived from all the replicates provided in the input file(s).
+
+# Global
+
+--------------------------------------------------------------------------------
+
+Run this chunk to set your variables and load all required packages before running any of the other code.
+
+**Edit this chunk:**
+```{r}
+# Path to folder containing all processed_data.csv files, ending with forward slash, `/`
+plate_data_path <- "./84lines_processed_data_2/"
+
+# Drug to filter for, as it appears in the input file
+drug_name <- "DrugName"
+
+# Path to save location for figures generated, ending with forward slash, `/`
+# Script will automatically make this folder if it doesn't already exist
+output_data_path <- "./20240313_leiomyosarcoma"
+
+# Set the y-axis upper limit in 0.2 unit intervals
+# SC note: I usually use 2.6-3 for 3D screens and 1.2 for 2D screens
+upper_y_limit <- 1.2
+```
+
+Run:
+```{r setup, message=FALSE, warning=FALSE}
+# Make output directory within the plate_data_path directory
+if(!dir.exists(file.path(output_data_path))) { dir.create(file.path(output_data_path), recursive = TRUE) }
+
+set.seed(1234)
+options(scipen = 6, digits = 4)
+knitr::opts_chunk$set(echo = TRUE)
+
+pkgs <- c("tidyverse", "reshape2",  "magrittr", "ComplexHeatmap", "circlize", "plotly", "drc")
+
+check <- sapply(pkgs, require, warn.conflicts = TRUE, character.only = TRUE)
+if(any(!check)){
+  pkgs.missing <- pkgs[!check]
+  install.packages(pkgs.missing)
+  check <- sapply(pkgs.missing, require, warn.conflicts = TRUE, character.only = TRUE)
+}
+
+unfactorize <- function(df){
+  # Convert factors to characters
+  for(i in which(sapply(df, class) == "factor")) {
+    df[[i]] <- as.character(df[[i]])
+  }
+  return(df)
+}
+```
+
+# 1. Read in data
+
+--------------------------------------------------------------------------------
+
+Read in all `processed_data` CSV files in the plate_data_path directory and concatenate them into a single dataframe object with column names `concentration`, `drug`, `norm`, and `cell_line.`
+
+Run:
+```{r}
+filelist <- paste0(plate_data_path, list.files(path = plate_data_path, pattern = "\\.csv$"))
+plate_df_full <- do.call("rbind", lapply(filelist,
+                                         FUN = function(file) {
+                                           plate <- read.delim(file,
+                                                               header = TRUE,
+                                                               sep = ",",
+                                                               check.names = FALSE,
+                                                               stringsAsFactors = FALSE)
+                                           plate_df <- plate %>% dplyr::select(concentration, drug, norm, cell_line)
+                                           return(plate_df)
+                                         }))
+
+```
+
+# 2. Filter for drug of interest
+
+--------------------------------------------------------------------------------
+
+From Part 1 dataframe, `plate_df_full`, subset for drug of interest.
+
+Run:
+```{r}
+plate_df_filt <- plate_df_full
+plate_df_filt <- plate_df_filt %>% filter(drug == drug_name)
+plate_df_filt$cell_line <- unfactorize(plate_df_filt$cell_line)
+```
+
+# 3. Generate curves
+
+--------------------------------------------------------------------------------
+
+## 3.a. All cell lines colored
+
+Run:
+```{r}
+# Customize cell line colors here
+col_values_3a <- rainbow(length(unique(plate_df_filt$cell_line)))
+col_breaks_3a <- unique(plate_df_filt$cell_line)
+
+curves <- ggplot(data = plate_df_filt) +
+  geom_point(mapping = aes(x = concentration, y = norm, color = cell_line), alpha = 0.5) +
+  stat_smooth(mapping = aes(x = concentration, y = norm, color = cell_line),
+              method = "drm",
+              se = FALSE,
+              method.args = list(fct = L.4(names = c("Slope",
+                                                     "Lower Limit",
+                                                     "Upper Limit",
+                                                     "ED50")))) +
+  scale_y_continuous(breaks = seq(0, 100.0, by = 0.2)) +
+  coord_cartesian(ylim = c(0, upper_y_limit)) +
+  scale_color_manual(values = col_values_3a, breaks = col_breaks_3a) +
+  scale_x_log10() +
+  theme_bw() +
+  labs(x = "Concentration (uM)",
+       y = "Relative Intensity (CellTiter-Glo)",
+       title = drug_name,
+       color = "Cell lines") +
+  theme(axis.text.x = element_text(size = 14),
+        axis.text.y = element_text(size = 14),
+        axis.title.y = element_text(size = 16),
+        axis.title.x = element_text(size = 16),
+        plot.title = element_text(size = 22)) +
+  guides(col = guide_legend(nrow = 18))
+
+n_cell_lines <- length(unique(plate_df_filt$cell_line))
+width_multiplier <- round(n_cell_lines / 18)
+
+ggsave(plot = curves,
+       filename = paste0(output_data_path, "/", format(Sys.Date(), "%Y%m%d"), "_", drug_name, "all_cell_lines.png"),
+       device = "png",
+       dpi = 500,
+       width = 7.5 + width_multiplier,
+       height = 6,
+       units = "in")
+```
+
+### 3.a.i. Optional: Add BPC
+
+Code in the following chunks will add blood plasma concentration line to the color-highlighted plot above and save the figure as a new file.
+
+**Note:** Must run `4.a.` chunks prior to running code below.
+
+**Edit this chunk:**
+```{r}
+# in uM
+bpc <- 7
+```
+
+Run:
+```{r}
+curves_bpc <- curves +
+  geom_vline(xintercept = bpc, lty = 2, alpha = 2) + 
+  geom_label(aes(x = bpc, y = upper_y_limit, label = paste0("BPC = ", bpc," uM")), fill = "white", alpha = 0.6)
+
+ggsave(plot = curves_bpc,
+       filename = paste0(output_data_path, "/", format(Sys.Date(), "%Y%m%d"), "_", drug_name, "all_cell_lines_BPC.png"),
+       device = "png",
+       dpi = 500,
+       width = 7.5 + width_multiplier,
+       height = 6,
+       units = "in")
+```
+
+## 3.b. For coloring specific cell lines
+
+This section provides options to color all cell lines of interest and to color all other cell lines in gray.
+
+Run this line of code to view list of all cell lines screened with your drug of interest:
+```{r}
+unique(plate_df_filt$cell_line)
+```
+
+**Edit this chunk:**
+```{r}
+# Create list object of all cell lines you want to highlight with a color in final plot
+# Copy cell lines names from the output of the chunk above
+# All other curves will be gray
+cell_lines_to_color <- c("Leiomyosarcoma(G21.419)")
+```
+
+Run:
+```{r}
+# Customize cell line colors here
+n_colors <- length(cell_lines_to_color)
+colors <- rainbow(n_colors)
+
+cell_lines_to_gray <- unique(plate_df_filt$cell_line)[!(unique(plate_df_filt$cell_line) %in% cell_lines_to_color)]
+n_gray <- length(cell_lines_to_gray)
+
+col_values_3b <- c(colors, rep("gray75", n_gray))
+col_breaks_3b <- c(cell_lines_to_color, cell_lines_to_gray)
+
+plate_df_filt_gray <- filter(plate_df_filt, !(cell_line %in% cell_lines_to_color))
+plate_df_filt_color <- filter(plate_df_filt, cell_line %in% cell_lines_to_color)
+
+curves_color <- ggplot() +
+  geom_point(data = plate_df_filt_gray, mapping = aes(x = concentration, y = norm, color = cell_line), alpha = 0.5) +
+  stat_smooth(data = plate_df_filt_gray, mapping = aes(x = concentration, y = norm, color = cell_line),
+              method = "drm",
+              se = FALSE,
+              method.args = list(fct = L.4(names = c("Slope",
+                                                     "Lower Limit",
+                                                     "Upper Limit",
+                                                     "ED50")))) +
+  geom_point(data = plate_df_filt_color, mapping = aes(x = concentration, y = norm, color = cell_line), alpha = 0.5) +
+  stat_smooth(data = plate_df_filt_color, mapping = aes(x = concentration, y = norm, color = cell_line),
+              method = "drm",
+              se = FALSE,
+              method.args = list(fct = L.4(names = c("Slope",
+                                                     "Lower Limit",
+                                                     "Upper Limit",
+                                                     "ED50")))) +
+  scale_y_continuous(breaks = seq(0, 100.0, by = 0.2)) +
+  coord_cartesian(ylim = c(0, upper_y_limit)) +
+  scale_color_manual(values = col_values_3b, breaks = col_breaks_3b) +
+  scale_x_log10() +
+  theme_bw() +
+  labs(x = "Concentration (uM)",
+       y = "Relative Intensity (CellTiter-Glo)",
+       title = drug_name,
+       color = "Cell lines") +
+  theme(axis.text.x = element_text(size = 14),
+        axis.text.y = element_text(size = 14),
+        axis.title.y = element_text(size = 16),
+        axis.title.x = element_text(size = 16),
+        plot.title = element_text(size = 22)) +
+  guides(col = guide_legend(nrow = 18))
+
+ggsave(plot = curves_color,
+       filename = paste0(output_data_path, "/", format(Sys.Date(), "%Y%m%d"), "_", drug_name, "all_cell_lines_with_highlight.png"),
+       device = "png",
+       dpi = 500,
+       width = 7.5 + width_multiplier,
+       height = 6,
+       units = "in")
+```
+
+### 3.b.i. Optional: Add BPC
+
+Code in the following chunks will add blood plasma concentration line to the color-highlighted plot above and save the figure as a new file.
+
+**Note:** Must run `4.b.` chunks prior to running code below.
+
+**Edit this chunk:**
+```{r}
+# in uM
+bpc <- 7
+```
+
+Run:
+```{r}
+curvs_color_bpc <- curves_color +
+  geom_vline(xintercept = bpc, lty = 2, alpha = 2) + 
+  geom_label(aes(x = bpc, y = upper_y_limit, label = paste0("BPC = ", bpc," uM")), fill = "white", alpha = 0.6)
+
+ggsave(plot = curvs_color_bpc,
+       filename = paste0(output_data_path, "/", format(Sys.Date(), "%Y%m%d"), "_", drug_name, "all_cell_lines_with_highlight_BPC.png"),
+       device = "png",
+       dpi = 500,
+       width = 7.5 + width_multiplier,
+       height = 6,
+       units = "in")
+```
+
+
+# Make plots for all drugs
+
+--------------------------------------------------------------------------------
+
+
+```{r}
+MakeAllCurvesPerDrug <- function(cell_lines_col, plate_df_all, drug_name) {
+  plate_df_filt <- plate_df_all %>% filter(drug == drug_name)
+  plate_df_filt$cell_line <- unfactorize(plate_df_filt$cell_line)
+  
+  n_colors <- length(cell_lines_col)
+  colors <- rainbow(n_colors)
+  
+  cell_lines_to_gray <- unique(plate_df_filt$cell_line)[!(unique(plate_df_filt$cell_line) %in% cell_lines_col)]
+  n_gray <- length(cell_lines_to_gray)
+  
+  col_values_3b <- c(colors, rep("gray75", n_gray))
+  col_breaks_3b <- c(cell_lines_col, cell_lines_to_gray)
+  
+  plate_df_filt_gray <- filter(plate_df_filt, !(cell_line %in% cell_lines_col))
+  plate_df_filt_color <- filter(plate_df_filt, cell_line %in% cell_lines_col)
+  
+  curves_color <- ggplot() +
+    geom_point(data = plate_df_filt_gray, mapping = aes(x = concentration, y = norm, color = cell_line), alpha = 0.5) +
+    stat_smooth(data = plate_df_filt_gray, mapping = aes(x = concentration, y = norm, color = cell_line),
+                method = "drm",
+                se = FALSE,
+                method.args = list(fct = L.4(names = c("Slope",
+                                                       "Lower Limit",
+                                                       "Upper Limit",
+                                                       "ED50")))) +
+    geom_point(data = plate_df_filt_color, mapping = aes(x = concentration, y = norm, color = cell_line), alpha = 0.5) +
+    stat_smooth(data = plate_df_filt_color, mapping = aes(x = concentration, y = norm, color = cell_line),
+                method = "drm",
+                se = FALSE,
+                method.args = list(fct = L.4(names = c("Slope",
+                                                       "Lower Limit",
+                                                       "Upper Limit",
+                                                       "ED50")))) +
+    scale_y_continuous(breaks = seq(0, 100.0, by = 0.2)) +
+    coord_cartesian(ylim = c(0, upper_y_limit)) +
+    scale_color_manual(values = col_values_3b, breaks = col_breaks_3b) +
+    scale_x_log10() +
+    theme_bw() +
+    labs(x = "Concentration (uM)",
+         y = "Relative Intensity (CellTiter-Glo)",
+         title = drug_name,
+         color = "Cell lines") +
+    theme(axis.text.x = element_text(size = 14),
+          axis.text.y = element_text(size = 14),
+          axis.title.y = element_text(size = 16),
+          axis.title.x = element_text(size = 16),
+          plot.title = element_text(size = 22)) +
+    guides(col = guide_legend(nrow = 18))
+  
+  n_cell_lines <- length(unique(plate_df_filt$cell_line))
+  width_multiplier <- round(n_cell_lines / 18)
+  ggsave(plot = curves_color,
+         filename = paste0(output_data_path, "/", format(Sys.Date(), "%Y%m%d"), "_", drug_name, "_all_cell_lines_with_highlight.png"),
+         device = "png",
+         dpi = 500,
+         width = 8 + width_multiplier,
+         height = 6,
+         units = "in")
+
+}
+
+cell_lines_to_color <- c("Leiomyosarcoma(G21.419)")
+
+druglist <- unique(subset(plate_df_full, cell_line == "Leiomyosarcoma(G21.419)")$drug)
+
+# lapply(druglist, FUN = MakeAllCurvesPerDrug, cell_lines_col = cell_lines_to_color, plate_df_all = plate_df_full)
+```
+
+
+# Session information
+
+--------------------------------------------------------------------------------
+
+Print session information to console for version referencing:
+```{r}
+sessionInfo()
+
+print("ALL DONE! :D")
+```
+
+
+
+
+
+
